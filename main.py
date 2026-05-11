@@ -1,5 +1,6 @@
 import os
-from fastapi import FastAPI
+from typing import Optional
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
@@ -12,6 +13,7 @@ import httpx
 SUPABASE_URL   = os.environ["SUPABASE_URL"]
 SUPABASE_KEY   = os.environ["SUPABASE_KEY"]
 OPENROUTER_KEY = os.environ["OPENROUTER_KEY"]
+DEMO_PASSCODE  = os.getenv("DEMO_PASSCODE")
 
 # ── Clients ───────────────────────────────────────────────────────────────────
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -33,10 +35,22 @@ app.add_middleware(
 # ── Request schema ────────────────────────────────────────────────────────────
 class AskRequest(BaseModel):
     question: str
+    passcode: Optional[str] = None
+
+
+def verify_demo_passcode(body_passcode: Optional[str], header_passcode: Optional[str]) -> None:
+    if not DEMO_PASSCODE:
+        return
+
+    provided_passcode = header_passcode or body_passcode
+    if provided_passcode != DEMO_PASSCODE:
+        raise HTTPException(status_code=401, detail="Invalid demo passcode")
 
 # ── /ask endpoint ─────────────────────────────────────────────────────────────
 @app.post("/ask")
-async def ask(req: AskRequest):
+async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=None)):
+    verify_demo_passcode(req.passcode, x_demo_passcode)
+
     # 1. Embed the question
     embed_response = openai_client.embeddings.create(
         model="openai/text-embedding-3-small",
