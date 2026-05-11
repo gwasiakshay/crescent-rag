@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .DS_Store
-Media_Account-Wise JSR - Pachranga.csv
+*.csv
+*.xlsx
+*.xls
 seed.py
-EOF
+
