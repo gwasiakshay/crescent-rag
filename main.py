@@ -38,6 +38,10 @@ class AskRequest(BaseModel):
     passcode: Optional[str] = None
 
 
+class PasscodeRequest(BaseModel):
+    passcode: Optional[str] = None
+
+
 def verify_demo_passcode(body_passcode: Optional[str], header_passcode: Optional[str]) -> None:
     if not DEMO_PASSCODE:
         return
@@ -45,6 +49,12 @@ def verify_demo_passcode(body_passcode: Optional[str], header_passcode: Optional
     provided_passcode = header_passcode or body_passcode
     if provided_passcode != DEMO_PASSCODE:
         raise HTTPException(status_code=401, detail="Invalid demo passcode")
+
+# ── /verify-passcode endpoint ─────────────────────────────────────────────────
+@app.post("/verify-passcode")
+async def verify_passcode(req: PasscodeRequest, x_demo_passcode: Optional[str] = Header(default=None)):
+    verify_demo_passcode(req.passcode, x_demo_passcode)
+    return {"valid": True}
 
 # ── /ask endpoint ─────────────────────────────────────────────────────────────
 @app.post("/ask")
