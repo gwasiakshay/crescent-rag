@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Optional, List
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -33,10 +33,14 @@ app.add_middleware(
 )
 
 # ── Request schema ────────────────────────────────────────────────────────────
+class Message(BaseModel):
+    role: str       # "user" or "assistant"
+    content: str
+
 class AskRequest(BaseModel):
     question: str
     passcode: Optional[str] = None
-
+    history: Optional[List[Message]] = []
 
 class PasscodeRequest(BaseModel):
     passcode: Optional[str] = None
@@ -45,7 +49,6 @@ class PasscodeRequest(BaseModel):
 def verify_demo_passcode(body_passcode: Optional[str], header_passcode: Optional[str]) -> None:
     if not DEMO_PASSCODE:
         return
-
     provided_passcode = header_passcode or body_passcode
     if provided_passcode != DEMO_PASSCODE:
         raise HTTPException(status_code=401, detail="Invalid demo passcode")
@@ -84,29 +87,41 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
         for i, c in enumerate(chunks)
     ])
 
-    # 4. Synthesise with Gemini Flash
+    # 4. Sliding window — last 4 messages only
+    recent_history = req.history[-4:] if len(req.history) > 4 else req.history
+
+    # 5. Build messages array with history
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a media account assistant for Crescent Group. "
+                "Answer questions about client campaigns using only the context provided. "
+                "Be specific - include platform names, status, budget figures, and remarks from the context. "
+                "Do not give one-line answers. Summarise all relevant details you find. "
+                "If the user refers to something from earlier in the conversation, use that context to inform your answer."
+            )
+        }
+    ]
+
+    for msg in recent_history:
+        messages.append({"role": msg.role, "content": msg.content})
+
+    # Current question with fresh context
+    messages.append({
+        "role": "user",
+        "content": f"Context:\n{context}\n\nQuestion: {req.question}"
+    })
+
+    # 6. Synthesise with Gemini Flash
     synthesis = openai_client.chat.completions.create(
         model="google/gemini-2.0-flash-001",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a media account assistant for Crescent Group. "
-                    "Answer questions about client campaigns using only the context provided. "
-                    "Be specific - include platform names, status, budget figures, and remarks from the context. "
-                    "Do not give one-line answers. Summarise all relevant details you find."
-                )
-            },
-            {
-                "role": "user",
-                "content": f"Context:\n{context}\n\nQuestion: {req.question}"
-            }
-        ]
+        messages=messages
     )
 
     answer = synthesis.choices[0].message.content
 
-    # 5. Return answer + sources
+    # 7. Return answer + sources
     sources = [
         {
             "platform": c.get("platform", ""),
