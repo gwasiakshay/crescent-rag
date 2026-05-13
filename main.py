@@ -80,23 +80,24 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
 
     chunks = result.data or []
 
+    # 3. No-results guard — don't call Gemini if nothing relevant found
     if not chunks:
-    return {
-        "answer": "I don't have enough information in the current data to answer that question.",
-        "sources": []
-    }
+        return {
+            "answer": "I don't have enough information in the current data to answer that question.",
+            "sources": []
+        }
 
-    # 3. Build context for Gemini
+    # 4. Build context for Gemini
     context = "\n\n".join([
         f"[{i+1}] Platform: {c.get('platform','')}, Job: {c.get('job','')}, "
         f"Status: {c.get('status','')}\n{c.get('content','')}"
         for i, c in enumerate(chunks)
     ])
 
-    # 4. Sliding window — last 4 messages only
+    # 5. Sliding window — last 4 messages only
     recent_history = req.history[-4:] if len(req.history) > 4 else req.history
 
-    # 5. Build messages array with history
+    # 6. Build messages array with history
     messages = [
         {
             "role": "system",
@@ -105,7 +106,8 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
                 "Answer questions about client campaigns using only the context provided. "
                 "Be specific - include platform names, status, budget figures, and remarks from the context. "
                 "Do not give one-line answers. Summarise all relevant details you find. "
-                "If the user refers to something from earlier in the conversation, use that context to inform your answer."
+                "If the user refers to something from earlier in the conversation, use that context to inform your answer. "
+                "If the context does not contain enough information to answer the question, say so clearly — do not invent or assume data."
             )
         }
     ]
@@ -113,13 +115,12 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
     for msg in recent_history:
         messages.append({"role": msg.role, "content": msg.content})
 
-    # Current question with fresh context
     messages.append({
         "role": "user",
         "content": f"Context:\n{context}\n\nQuestion: {req.question}"
     })
 
-    # 6. Synthesise with Gemini Flash
+    # 7. Synthesise with Gemini Flash
     synthesis = openai_client.chat.completions.create(
         model="google/gemini-2.0-flash-001",
         messages=messages
@@ -127,7 +128,7 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
 
     answer = synthesis.choices[0].message.content
 
-    # 7. Return answer + sources
+    # 8. Return answer + sources
     sources = [
         {
             "platform": c.get("platform", ""),
