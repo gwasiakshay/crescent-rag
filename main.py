@@ -64,14 +64,21 @@ async def verify_passcode(req: PasscodeRequest, x_demo_passcode: Optional[str] =
 async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=None)):
     verify_demo_passcode(req.passcode, x_demo_passcode)
 
-    # 1. Embed the question
+    # 1. Build richer embedding query for short/vague questions
+    if len(req.question.split()) <= 4 and req.history:
+        recent_user_msgs = [m.content for m in req.history[-4:] if m.role == "user"]
+        question_to_embed = " ".join(recent_user_msgs + [req.question])
+    else:
+        question_to_embed = req.question
+
+    # 2. Embed the question
     embed_response = openai_client.embeddings.create(
         model="openai/text-embedding-3-small",
-        input=req.question
+        input=question_to_embed
     )
     query_embedding = embed_response.data[0].embedding
 
-    # 2. Vector search via Supabase RPC
+    # 3. Vector search via Supabase RPC
     result = supabase.rpc("match_documents", {
         "query_embedding": query_embedding,
         "match_threshold": 0.35,
@@ -80,24 +87,24 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
 
     chunks = result.data or []
 
-    # 3. No-results guard — don't call Gemini if nothing relevant found
+    # 4. No-results guard — don't call Gemini if nothing relevant found
     if not chunks:
         return {
             "answer": "I don't have enough information in the current data to answer that question.",
             "sources": []
         }
 
-    # 4. Build context for Gemini
+    # 5. Build context for Gemini
     context = "\n\n".join([
         f"[{i+1}] Platform: {c.get('platform','')}, Job: {c.get('job','')}, "
         f"Status: {c.get('status','')}\n{c.get('content','')}"
         for i, c in enumerate(chunks)
     ])
 
-    # 5. Sliding window — last 4 messages only
+    # 6. Sliding window — last 4 messages only
     recent_history = req.history[-4:] if len(req.history) > 4 else req.history
 
-    # 6. Build messages array with history
+    # 7. Build messages array with history
     messages = [
         {
             "role": "system",
@@ -106,8 +113,9 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
                 "Answer questions about client campaigns using only the context provided. "
                 "Be specific - include platform names, status, budget figures, and remarks from the context. "
                 "Do not give one-line answers. Summarise all relevant details you find. "
-                "If the user refers to something from earlier in the conversation, use that context to inform your answer. "
-                "If the context does not contain enough information to answer the question, say so clearly — do not invent or assume data."
+                "If the user sends a short follow-up like 'organic?' or 'paid?' treat it as a continuation "
+                "of the previous question and answer accordingly from the context. "
+                "If the context does not contain enough information to answer, say so clearly — do not invent or assume data."
             )
         }
     ]
@@ -120,7 +128,7 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
         "content": f"Context:\n{context}\n\nQuestion: {req.question}"
     })
 
-    # 7. Synthesise with Gemini Flash
+    # 8. Synthesise with Gemini Flash
     synthesis = openai_client.chat.completions.create(
         model="google/gemini-2.0-flash-001",
         messages=messages
@@ -128,7 +136,7 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
 
     answer = synthesis.choices[0].message.content
 
-    # 8. Return answer + sources
+    # 9. Return answer + sources
     sources = [
         {
             "platform": c.get("platform", ""),
