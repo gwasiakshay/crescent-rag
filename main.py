@@ -74,11 +74,17 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
     # 2. Vector search via Supabase RPC
     result = supabase.rpc("match_documents", {
         "query_embedding": query_embedding,
-        "match_threshold": 0.3,
+        "match_threshold": 0.45,
         "match_count": 8
     }).execute()
 
     chunks = result.data or []
+
+    if not chunks:
+    return {
+        "answer": "I don't have enough information in the current data to answer that question.",
+        "sources": []
+    }
 
     # 3. Build context for Gemini
     context = "\n\n".join([
