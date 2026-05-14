@@ -85,9 +85,12 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
     # 2. Embed the question
     question = req.question.lower()
 
-for k, v in QUERY_SYNONYMS.items():
-    if k in question:
-        question += " " + v
+    for k, v in QUERY_SYNONYMS.items():
+
+        if k in question:
+
+            question += " " + v
+            
     embed_response = openai_client.embeddings.create(
         model="openai/text-embedding-3-small",
         input=question
