@@ -94,6 +94,25 @@ QUERY_SYNONYMS = {
 }
 
 
+# ── Analytical intent detection ───────────────────────────────────────────────
+ANALYTICAL_KEYWORDS = [
+    "improve",
+    "optimize",
+    "strategy",
+    "recommend",
+    "suggest",
+    "increase",
+    "reduce",
+    "why",
+    "issue",
+    "problem",
+    "risk",
+    "better",
+    "fix",
+    "how"
+]
+
+
 # ── /ask endpoint ─────────────────────────────────────────────────────────────
 @app.post("/ask")
 async def ask(
@@ -120,7 +139,13 @@ async def ask(
         if k in question:
             question += " " + v
 
-    # ── 3. Generate embedding ────────────────────────────────────────────────
+    # ── 3. Detect analytical intent ──────────────────────────────────────────
+    is_analytical = any(
+        keyword in question
+        for keyword in ANALYTICAL_KEYWORDS
+    )
+
+    # ── 4. Generate embedding ────────────────────────────────────────────────
     embed_response = openai_client.embeddings.create(
         model="openai/text-embedding-3-small",
         input=question
@@ -128,7 +153,7 @@ async def ask(
 
     query_embedding = embed_response.data[0].embedding
 
-    # ── 4. Vector search ─────────────────────────────────────────────────────
+    # ── 5. Vector search ─────────────────────────────────────────────────────
     result = supabase.rpc(
         "match_documents",
         {
@@ -140,7 +165,7 @@ async def ask(
 
     chunks = result.data or []
 
-    # ── 5. No-results guard ──────────────────────────────────────────────────
+    # ── 6. No-results guard ──────────────────────────────────────────────────
     if not chunks:
         return {
             "answer": (
@@ -150,36 +175,53 @@ async def ask(
             "sources": []
         }
 
-    # ── 6. Build retrieval context ───────────────────────────────────────────
+    # ── 7. Build structured retrieval context ────────────────────────────────
     context = "\n\n".join([
         (
-            f"[{i+1}] "
-            f"Platform: {c.get('platform', '')}, "
-            f"Job: {c.get('job', '')}, "
+            f"[Document {i+1}]\n"
+            f"Platform: {c.get('platform', '')}\n"
+            f"Job: {c.get('job', '')}\n"
             f"Status: {c.get('status', '')}\n"
-            f"{c.get('content', '')}"
+            f"Content:\n{c.get('content', '')}"
         )
         for i, c in enumerate(chunks)
     ])
 
-    # ── 7. Build Gemini messages ─────────────────────────────────────────────
+    # ── 8. Build dynamic system prompt ───────────────────────────────────────
+    system_prompt = (
+        "You are an internal operations memory assistant for Crescent Group.\n\n"
+
+        "Rules:\n"
+        "- Answer ONLY using retrieved context.\n"
+        "- Give complete professional sentences.\n"
+        "- Never return incomplete thoughts.\n"
+        "- Mention platform names, campaign details, statuses, blockers, and operational insights when relevant.\n"
+        "- Treat short follow-up questions as continuation of previous discussion.\n"
+        "- If information is incomplete, clearly explain what is known.\n"
+        "- If information is unavailable, say so clearly.\n"
+        "- Do not invent fake data, metrics, or campaign performance.\n"
+    )
+
+    if is_analytical:
+        system_prompt += (
+            "\nAdditional behavior:\n"
+            "- The user is asking for analysis or recommendations.\n"
+            "- You may provide grounded operational suggestions and reasoning.\n"
+            "- Base recommendations ONLY on retrieved context.\n"
+            "- Explain WHY a recommendation could help.\n"
+            "- Clearly distinguish observations from recommendations.\n"
+        )
+    else:
+        system_prompt += (
+            "\nAdditional behavior:\n"
+            "- Focus on factual retrieval and operational summaries only.\n"
+        )
+
+    # ── 9. Build messages array ──────────────────────────────────────────────
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are an internal operations memory assistant for Crescent Group.\n\n"
-
-                "Rules:\n"
-                "- Answer ONLY using the retrieved context.\n"
-                "- Give complete and professional sentences.\n"
-                "- Never return incomplete sentences.\n"
-                "- Summarise operational details clearly.\n"
-                "- Mention platform names, statuses, and blockers when relevant.\n"
-                "- Treat short follow-up questions as continuation of previous discussion.\n"
-                "- If information is incomplete, explain what is known.\n"
-                "- If information is unavailable, clearly say so.\n"
-                "- Do not invent facts, assumptions, or strategies."
-            )
+            "content": system_prompt
         }
     ]
 
@@ -199,7 +241,7 @@ async def ask(
         )
     })
 
-    # ── 8. Generate response ─────────────────────────────────────────────────
+    # ── 10. Generate response ────────────────────────────────────────────────
     synthesis = openai_client.chat.completions.create(
         model="google/gemini-2.0-flash-001",
         messages=messages
@@ -207,7 +249,7 @@ async def ask(
 
     answer = synthesis.choices[0].message.content
 
-    # ── 9. Return sources ────────────────────────────────────────────────────
+    # ── 11. Return sources ───────────────────────────────────────────────────
     sources = [
         {
             "platform": c.get("platform", ""),
