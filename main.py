@@ -59,6 +59,17 @@ async def verify_passcode(req: PasscodeRequest, x_demo_passcode: Optional[str] =
     verify_demo_passcode(req.passcode, x_demo_passcode)
     return {"valid": True}
 
+# ── Query expansion ─────────────────────────────────────────
+
+QUERY_SYNONYMS = {
+    "roi": "roas return on ad spend marketing performance",
+    "renewal": "renew reactivate subscription expiry",
+    "blockers": "blocked stuck pending hold",
+    "campaign": "advertising ads performance",
+    "organic": "organic sales non paid revenue",
+    "paid": "paid ads advertising spend",
+}
+
 # ── /ask endpoint ─────────────────────────────────────────────────────────────
 @app.post("/ask")
 async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=None)):
@@ -72,16 +83,21 @@ async def ask(req: AskRequest, x_demo_passcode: Optional[str] = Header(default=N
         question_to_embed = req.question
 
     # 2. Embed the question
+    question = req.question.lower()
+
+for k, v in QUERY_SYNONYMS.items():
+    if k in question:
+        question += " " + v
     embed_response = openai_client.embeddings.create(
         model="openai/text-embedding-3-small",
-        input=question_to_embed
+        input=question
     )
     query_embedding = embed_response.data[0].embedding
 
     # 3. Vector search via Supabase RPC
     result = supabase.rpc("match_documents", {
         "query_embedding": query_embedding,
-        "match_threshold": 0.35,
+        "match_threshold": 0.28,
         "match_count": 8
     }).execute()
 
