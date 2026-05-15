@@ -159,6 +159,27 @@ async def get_messages(
         for r in rows.data
     ]
 
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    x_demo_passcode: Optional[str] = Header(default=None)
+):
+    verify_demo_passcode(None, x_demo_passcode)
+    supabase.table("conversations").delete().eq("id", conversation_id).execute()
+    return {"deleted": True}
+
+
+@app.patch("/conversations/{conversation_id}")
+async def rename_conversation(
+    conversation_id: str,
+    body: dict,
+    x_demo_passcode: Optional[str] = Header(default=None)
+):
+    verify_demo_passcode(None, x_demo_passcode)
+    supabase.table("conversations").update(
+        {"title": body.get("title")}
+    ).eq("id", conversation_id).execute()
+    return {"updated": True}
 
 # ── Query expansion ───────────────────────────────────────────────────────────
 QUERY_SYNONYMS = {
