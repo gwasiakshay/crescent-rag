@@ -90,9 +90,7 @@ async def verify_passcode(
     req: PasscodeRequest,
     x_demo_passcode: Optional[str] = Header(default=None)
 ):
-
     verify_demo_passcode(req.passcode, x_demo_passcode)
-
     return {"valid": True}
 
 
@@ -175,6 +173,24 @@ QUERY_SYNONYMS = {
     "paid": "paid ads advertising spend",
 }
 
+# ── Analytical intent detection ───────────────────────────────────────────────
+ANALYTICAL_KEYWORDS = [
+    "improve",
+    "optimize",
+    "strategy",
+    "recommend",
+    "suggest",
+    "increase",
+    "reduce",
+    "why",
+    "issue",
+    "problem",
+    "risk",
+    "better",
+    "fix",
+    "how"
+]
+
 
 # ── /ask endpoint ─────────────────────────────────────────────────────────────
 @app.post("/ask")
@@ -182,50 +198,57 @@ async def ask(
     req: AskRequest,
     x_demo_passcode: Optional[str] = Header(default=None)
 ):
-
     verify_demo_passcode(req.passcode, x_demo_passcode)
 
     # ── 1. Resolve conversation & history ────────────────────────────────────
     if req.conversation_id:
         conversation_id = req.conversation_id
+        # Load last 4 messages in correct chronological order
         db_msgs = (
             supabase.table("messages")
             .select("role,content")
             .eq("conversation_id", conversation_id)
-            .order("created_at")
+            .order("created_at", desc=True)  # newest first
             .limit(4)
             .execute()
         )
-        recent_history = [Message(role=m["role"], content=m["content"]) for m in (db_msgs.data or [])]
+        # Reverse so oldest is first (correct conversation order)
+        recent_history = [
+            Message(role=m["role"], content=m["content"])
+            for m in reversed(db_msgs.data or [])
+        ]
     else:
+        # Auto-create a new conversation (backwards-compatible)
         conv_row = supabase.table("conversations").insert({}).execute()
         conversation_id = conv_row.data[0]["id"]
         recent_history = req.history[-4:] if req.history else []
 
     # ── 2. Build conversational retrieval context ────────────────────────────
     conversation_context = ""
-
     for msg in recent_history:
         conversation_context += f"{msg.role}: {msg.content}\n"
-
     conversation_context += f"user: {req.question}"
 
     # ── 3. Semantic expansion ────────────────────────────────────────────────
     question = conversation_context.lower()
-
     for k, v in QUERY_SYNONYMS.items():
         if k in question:
             question += " " + v
 
-    # ── 4. Generate embedding ────────────────────────────────────────────────
+    # ── 4. Detect analytical intent ──────────────────────────────────────────
+    is_analytical = any(
+        keyword in question
+        for keyword in ANALYTICAL_KEYWORDS
+    )
+
+    # ── 5. Generate embedding ────────────────────────────────────────────────
     embed_response = openai_client.embeddings.create(
         model="openai/text-embedding-3-small",
         input=question
     )
-
     query_embedding = embed_response.data[0].embedding
 
-    # ── 5. Vector search ─────────────────────────────────────────────────────
+    # ── 6. Vector search ─────────────────────────────────────────────────────
     result = supabase.rpc(
         "match_documents",
         {
@@ -237,57 +260,67 @@ async def ask(
 
     chunks = result.data or []
 
-    # ── 6. No-results guard ──────────────────────────────────────────────────
+    # ── 7. No-results guard ──────────────────────────────────────────────────
     if not chunks:
         return {
             "answer": (
                 "I don't have enough information in the current "
                 "data to answer that question."
             ),
-            "sources": []
+            "sources": [],
+            "conversation_id": conversation_id,
         }
 
-    # ── 7. Build retrieval context ───────────────────────────────────────────
+    # ── 8. Build structured retrieval context ────────────────────────────────
     context = "\n\n".join([
         (
-            f"[{i+1}] "
-            f"Platform: {c.get('platform', '')}, "
-            f"Job: {c.get('job', '')}, "
+            f"[Document {i+1}]\n"
+            f"Platform: {c.get('platform', '')}\n"
+            f"Job: {c.get('job', '')}\n"
             f"Status: {c.get('status', '')}\n"
-            f"{c.get('content', '')}"
+            f"Content:\n{c.get('content', '')}"
         )
         for i, c in enumerate(chunks)
     ])
 
-    # ── 8. Build Gemini messages ─────────────────────────────────────────────
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an internal operations memory assistant for Crescent Group.\n\n"
+    # ── 9. Build dynamic system prompt ───────────────────────────────────────
+    system_prompt = (
+        "You are an internal operations memory assistant for Crescent Group.\n\n"
 
-                "Rules:\n"
-                "- Answer ONLY using the retrieved context.\n"
-                "- Give complete and professional sentences.\n"
-                "- Never return incomplete sentences.\n"
-                "- Summarise operational details clearly.\n"
-                "- Mention platform names, statuses, and blockers when relevant.\n"
-                "- Treat short follow-up questions as continuation of previous discussion.\n"
-                "- If information is incomplete, explain what is known.\n"
-                "- If information is unavailable, clearly say so.\n"
-                "- Do not invent facts, assumptions, or strategies."
-            )
-        }
-    ]
+        "Rules:\n"
+        "- Answer ONLY using the retrieved context.\n"
+        "- Give complete and professional sentences.\n"
+        "- Never return incomplete sentences.\n"
+        "- Mention platform names, campaign details, statuses, and blockers when relevant.\n"
+        "- Treat short follow-up questions as continuation of the previous discussion.\n"
+        "- If information is incomplete, clearly explain what is known.\n"
+        "- If information is unavailable, say so clearly.\n"
+        "- Do not invent facts, metrics, or campaign performance.\n"
+    )
 
-    # Add recent history
+    if is_analytical:
+        system_prompt += (
+            "\nAdditional behavior:\n"
+            "- The user is asking for analysis or recommendations.\n"
+            "- You may provide grounded operational suggestions and reasoning.\n"
+            "- Base recommendations ONLY on retrieved context.\n"
+            "- Explain WHY a recommendation could help.\n"
+            "- Clearly distinguish observations from recommendations.\n"
+        )
+    else:
+        system_prompt += (
+            "\nAdditional behavior:\n"
+            "- Focus on factual retrieval and operational summaries only.\n"
+        )
+
+    # ── 10. Build messages array ──────────────────────────────────────────────
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Add recent history for conversational context
     for msg in recent_history:
-        messages.append({
-            "role": msg.role,
-            "content": msg.content
-        })
+        messages.append({"role": msg.role, "content": msg.content})
 
-    # Add retrieval context
+    # Add retrieval context + current question
     messages.append({
         "role": "user",
         "content": (
@@ -296,7 +329,7 @@ async def ask(
         )
     })
 
-    # ── 9. Generate response ─────────────────────────────────────────────────
+    # ── 11. Generate response ─────────────────────────────────────────────────
     synthesis = openai_client.chat.completions.create(
         model="google/gemini-2.0-flash-001",
         messages=messages
@@ -304,7 +337,7 @@ async def ask(
 
     answer = synthesis.choices[0].message.content
 
-    # ── 10. Build sources ────────────────────────────────────────────────────
+    # ── 12. Build sources ─────────────────────────────────────────────────────
     sources = [
         {
             "platform": c.get("platform", ""),
@@ -315,19 +348,25 @@ async def ask(
         for c in chunks
     ]
 
-    # ── 11. Persist messages & update conversation ───────────────────────────
+    # ── 13. Persist messages & update conversation ────────────────────────────
     supabase.table("messages").insert([
         {"conversation_id": conversation_id, "role": "user", "content": req.question},
         {"conversation_id": conversation_id, "role": "assistant", "content": answer, "sources": sources},
     ]).execute()
 
+    # Set title from first question, bump updated_at
     conv_update: dict = {"updated_at": "now()"}
-    existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
+    existing = (
+        supabase.table("conversations")
+        .select("title")
+        .eq("id", conversation_id)
+        .execute()
+    )
     if existing.data and existing.data[0].get("title") is None:
         conv_update["title"] = req.question[:80]
     supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
 
-    # ── 12. Return ───────────────────────────────────────────────────────────
+    # ── 14. Return ────────────────────────────────────────────────────────────
     return {
         "answer": answer,
         "sources": sources,
