@@ -45,7 +45,8 @@ class AskRequest(BaseModel):
     passcode: Optional[str] = None
     history: Optional[List[Message]] = []
     conversation_id: Optional[str] = None
-    mode: Optional[str] = "memory"          # NEW: memory | marketing | operations | performance
+    mode: Optional[str] = "auto"            # auto | memory | marketing | operations | performance | analyst
+    client: Optional[str] = "Pachranga"     # client name for analyst mode full-context fetch
 
 
 class PasscodeRequest(BaseModel):
@@ -72,17 +73,11 @@ def verify_demo_passcode(
     body_passcode: Optional[str],
     header_passcode: Optional[str]
 ) -> None:
-
     if not DEMO_PASSCODE:
         return
-
     provided_passcode = header_passcode or body_passcode
-
     if provided_passcode != DEMO_PASSCODE:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid demo passcode"
-        )
+        raise HTTPException(status_code=401, detail="Invalid demo passcode")
 
 
 # ── /verify-passcode endpoint ────────────────────────────────────────────────
@@ -101,7 +96,6 @@ async def create_conversation(
     x_demo_passcode: Optional[str] = Header(default=None)
 ):
     verify_demo_passcode(None, x_demo_passcode)
-
     row = supabase.table("conversations").insert({}).execute()
     data = row.data[0]
     return ConversationResponse(
@@ -117,7 +111,6 @@ async def list_conversations(
     x_demo_passcode: Optional[str] = Header(default=None)
 ):
     verify_demo_passcode(None, x_demo_passcode)
-
     rows = (
         supabase.table("conversations")
         .select("*")
@@ -141,7 +134,6 @@ async def get_messages(
     x_demo_passcode: Optional[str] = Header(default=None)
 ):
     verify_demo_passcode(None, x_demo_passcode)
-
     rows = (
         supabase.table("messages")
         .select("*")
@@ -186,16 +178,60 @@ async def rename_conversation(
 
 # ── Query expansion ───────────────────────────────────────────────────────────
 QUERY_SYNONYMS = {
-    "roi": "roas return on ad spend marketing performance",
-    "renewal": "renew reactivate subscription expiry",
+    "roi":      "roas return on ad spend marketing performance",
+    "renewal":  "renew reactivate subscription expiry",
     "blockers": "blocked stuck pending hold stalled cannot proceed",
-    "stuck": "blocked stalled cannot proceed on hold",
-    "stalled": "blocked stuck pending hold",
-    "hold": "blocked stalled waiting cannot proceed",
+    "stuck":    "blocked stalled cannot proceed on hold",
+    "stalled":  "blocked stuck pending hold",
+    "hold":     "blocked stalled waiting cannot proceed",
     "campaign": "advertising ads performance",
-    "organic": "organic sales non paid revenue",
-    "paid": "paid ads advertising spend",
+    "organic":  "organic sales non paid revenue",
+    "paid":     "paid ads advertising spend",
 }
+
+
+# ── Auto intent router ────────────────────────────────────────────────────────
+INTENT_RULES = {
+    "analyst": [
+        "brief", "briefing", "overview", "summary", "full picture",
+        "everything", "all of it", "what's going on", "overall",
+        "account status", "give me a rundown", "full report",
+        "what do you know", "tell me about", "analyse", "analyze",
+    ],
+    "operations": [
+        "blocker", "blocked", "stuck", "pending", "renewal", "renew",
+        "follow up", "followup", "no response", "waiting", "escalate",
+        "urgent", "overdue", "approval", "onboarding", "shipment",
+        "out of stock", "inventory",
+    ],
+    "performance": [
+        "roas", "roi", "spend", "budget", "optimize", "optimise",
+        "improve", "underperform", "efficiency", "cost", "burn rate",
+        "conversion", "acos", "ad spend", "realloc",
+    ],
+    "marketing": [
+        "keyword", "campaign", "search term", "targeting", "asin",
+        "bid", "creative", "content", "listing", "brand",
+        "display", "remarketing", "strategy", "recommend",
+    ],
+    "memory": [],   # fallback — always matches last
+}
+
+def detect_intent(question: str) -> str:
+    """
+    Rule-based intent router.
+    Checks question against keyword lists in priority order.
+    Falls back to 'memory' if nothing matches.
+    """
+    q = question.lower()
+
+    # Check in priority order: analyst → operations → performance → marketing → memory
+    for mode in ["analyst", "operations", "performance", "marketing"]:
+        for keyword in INTENT_RULES[mode]:
+            if keyword in q:
+                return mode
+
+    return "memory"
 
 
 # ── Mode-based system prompts ─────────────────────────────────────────────────
@@ -224,9 +260,25 @@ MODE_PROMPTS = {
         "Identify underperforming campaigns and suggest reallocation based ONLY on retrieved context.\n"
         "Always ground recommendations in the data — never invent metrics.\n"
     ),
+    "analyst": (
+        "You are a senior account analyst for Crescent Group.\n"
+        "You have been given the COMPLETE JSR data for this client — every row, every platform, every status.\n"
+        "Your job is to reason across ALL of it, not just answer the question literally.\n\n"
+        "Response structure (always follow this):\n"
+        "1. Direct Answer — answer the user's specific question first, clearly and precisely.\n"
+        "2. 📊 Performance Summary — key metrics (ROAS, revenue, orders, spend) if available.\n"
+        "3. ✅ What's Working — active campaigns, live platforms, ongoing tasks running well.\n"
+        "4. 🚨 Blockers & At-Risk Items — stalled work, no-response follow-ups, pending confirmations, out-of-stock issues.\n"
+        "5. ⚡ Immediate Actions Needed — specific things that need to happen now, with owners if known.\n\n"
+        "Rules:\n"
+        "- Always surface blockers even if the user didn't ask about them.\n"
+        "- Be specific — name the platform, the job, the issue.\n"
+        "- Never invent data. Only use what's in the JSR.\n"
+        "- Think like a smart analyst who has read the full file, not a search engine.\n"
+    ),
 }
 
-# Shared rules appended to every mode prompt
+# Shared rules appended to non-analyst mode prompts
 SHARED_RULES = (
     "\nRules:\n"
     "- Answer ONLY using the retrieved context.\n"
@@ -238,6 +290,29 @@ SHARED_RULES = (
     "- If information is unavailable, say so clearly.\n"
     "- Do not invent facts, metrics, or campaign performance.\n"
 )
+
+
+# ── Analyst mode: fetch ALL documents for a client ────────────────────────────
+def fetch_all_client_docs(client: str) -> str:
+    """Fetch every document for a client and build a full context string."""
+    rows = (
+        supabase.table("documents")
+        .select("content, platform, job, status")
+        .eq("client", client)
+        .execute()
+    )
+    if not rows.data:
+        return ""
+    parts = []
+    for i, r in enumerate(rows.data):
+        parts.append(
+            f"[Row {i+1}]\n"
+            f"Platform: {r.get('platform', '')}\n"
+            f"Job: {r.get('job', '')}\n"
+            f"Status: {r.get('status', '')}\n"
+            f"Content:\n{r.get('content', '')}"
+        )
+    return "\n\n".join(parts)
 
 
 # ── /ask endpoint ─────────────────────────────────────────────────────────────
@@ -268,26 +343,83 @@ async def ask(
         conversation_id = conv_row.data[0]["id"]
         recent_history = req.history[-4:] if req.history else []
 
-    # ── 2. Build conversational retrieval context ────────────────────────────
+    # ── 2. Resolve mode (auto-route or use manual selection) ──────────────────
+    if req.mode == "auto" or req.mode not in MODE_PROMPTS:
+        resolved_mode = detect_intent(req.question)
+    else:
+        resolved_mode = req.mode
+
+    # ── 3. ANALYST MODE — full context path (skips vector search) ────────────
+    if resolved_mode == "analyst":
+        full_context = fetch_all_client_docs(req.client or "Pachranga")
+
+        if not full_context:
+            return {
+                "answer": "No data found for this client in the database.",
+                "sources": [],
+                "conversation_id": conversation_id,
+                "mode_used": resolved_mode,
+            }
+
+        messages = [{"role": "system", "content": MODE_PROMPTS["analyst"]}]
+        for msg in recent_history:
+            messages.append({"role": msg.role, "content": msg.content})
+        messages.append({
+            "role": "user",
+            "content": (
+                f"Complete JSR Data for {req.client or 'Pachranga'}:\n\n"
+                f"{full_context}\n\n"
+                f"Question: {req.question}"
+            )
+        })
+
+        synthesis = openai_client.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=messages
+        )
+        answer = synthesis.choices[0].message.content
+
+        # Persist
+        supabase.table("messages").insert([
+            {"conversation_id": conversation_id, "role": "user", "content": req.question},
+            {"conversation_id": conversation_id, "role": "assistant", "content": answer, "sources": []},
+        ]).execute()
+
+        conv_update: dict = {"updated_at": "now()"}
+        existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
+        if existing.data and existing.data[0].get("title") is None:
+            conv_update["title"] = req.question[:80]
+        supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
+
+        return {
+            "answer": answer,
+            "sources": [],
+            "conversation_id": conversation_id,
+            "mode_used": resolved_mode,      # tells frontend which mode was auto-selected
+        }
+
+    # ── 4. STANDARD MODES — vector search path ────────────────────────────────
+
+    # Build conversational retrieval context
     conversation_context = ""
     for msg in recent_history:
         conversation_context += f"{msg.role}: {msg.content}\n"
     conversation_context += f"user: {req.question}"
 
-    # ── 3. Semantic expansion ────────────────────────────────────────────────
+    # Semantic expansion
     question = conversation_context.lower()
     for k, v in QUERY_SYNONYMS.items():
         if k in question:
             question += " " + v
 
-    # ── 4. Generate embedding ────────────────────────────────────────────────
+    # Generate embedding
     embed_response = openai_client.embeddings.create(
         model="openai/text-embedding-3-small",
         input=question
     )
     query_embedding = embed_response.data[0].embedding
 
-    # ── 5. Vector search ─────────────────────────────────────────────────────
+    # Vector search
     result = supabase.rpc(
         "match_documents",
         {
@@ -299,18 +431,16 @@ async def ask(
 
     chunks = result.data or []
 
-    # ── 6. No-results guard ──────────────────────────────────────────────────
+    # No-results guard
     if not chunks:
         return {
-            "answer": (
-                "I don't have enough information in the current "
-                "data to answer that question."
-            ),
+            "answer": "I don't have enough information in the current data to answer that question.",
             "sources": [],
             "conversation_id": conversation_id,
+            "mode_used": resolved_mode,
         }
 
-    # ── 7. Build structured retrieval context ────────────────────────────────
+    # Build structured retrieval context
     context = "\n\n".join([
         (
             f"[Document {i+1}]\n"
@@ -322,33 +452,26 @@ async def ask(
         for i, c in enumerate(chunks)
     ])
 
-    # ── 8. Build mode-based system prompt ────────────────────────────────────
-    mode = req.mode if req.mode in MODE_PROMPTS else "memory"
-    system_prompt = MODE_PROMPTS[mode] + SHARED_RULES
+    # Build mode-based system prompt
+    system_prompt = MODE_PROMPTS[resolved_mode] + SHARED_RULES
 
-    # ── 9. Build messages array ───────────────────────────────────────────────
+    # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
-
     for msg in recent_history:
         messages.append({"role": msg.role, "content": msg.content})
-
     messages.append({
         "role": "user",
-        "content": (
-            f"Retrieved Context:\n{context}\n\n"
-            f"Current Question:\n{req.question}"
-        )
+        "content": f"Retrieved Context:\n{context}\n\nCurrent Question:\n{req.question}"
     })
 
-    # ── 10. Generate response ─────────────────────────────────────────────────
+    # Generate response
     synthesis = openai_client.chat.completions.create(
         model="google/gemini-2.0-flash-001",
         messages=messages
     )
-
     answer = synthesis.choices[0].message.content
 
-    # ── 11. Build sources ─────────────────────────────────────────────────────
+    # Build sources
     sources = [
         {
             "platform": c.get("platform", ""),
@@ -359,28 +482,23 @@ async def ask(
         for c in chunks
     ]
 
-    # ── 12. Persist messages & update conversation ────────────────────────────
+    # Persist messages & update conversation
     supabase.table("messages").insert([
         {"conversation_id": conversation_id, "role": "user", "content": req.question},
         {"conversation_id": conversation_id, "role": "assistant", "content": answer, "sources": sources},
     ]).execute()
 
     conv_update: dict = {"updated_at": "now()"}
-    existing = (
-        supabase.table("conversations")
-        .select("title")
-        .eq("id", conversation_id)
-        .execute()
-    )
+    existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
     if existing.data and existing.data[0].get("title") is None:
         conv_update["title"] = req.question[:80]
     supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
 
-    # ── 13. Return ────────────────────────────────────────────────────────────
     return {
         "answer": answer,
         "sources": sources,
         "conversation_id": conversation_id,
+        "mode_used": resolved_mode,          # tells frontend which mode was auto-selected
     }
 
 
