@@ -194,9 +194,12 @@ QUERY_SYNONYMS = {
 INTENT_RULES = {
     "analyst": [
         "brief", "briefing", "overview", "summary", "full picture",
-        "everything", "all of it", "what's going on", "overall",
-        "account status", "give me a rundown", "full report",
-        "what do you know", "tell me about", "analyse", "analyze",
+          "everything", "all of it", "what's going on", "overall",
+          "account status", "give me a rundown", "full report",
+          "what do you know", "tell me about", "analyse", "analyze",
+          "improve", "what needs to be done", "what should we do",
+          "what can we do", "how do we", "next steps", "recommendations",
+          "what to do", "action", "suggest", "fix", "better",
     ],
     "operations": [
         "blocker", "blocked", "stuck", "pending", "renewal", "renew",
@@ -207,7 +210,7 @@ INTENT_RULES = {
     "performance": [
         "roas", "roi", "spend", "budget", "optimize", "optimise",
         "improve", "underperform", "efficiency", "cost", "burn rate",
-        "conversion", "acos", "ad spend", "realloc",
+        "conversion", "acos", "ad spend", "realloc", "efficiency",
     ],
     "marketing": [
         "keyword", "campaign", "search term", "targeting", "asin",
