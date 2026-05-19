@@ -24,7 +24,8 @@ openai_client = OpenAI(
     base_url="https://openrouter.ai/api/v1"
 )
 
-# ── Available clients (update this list as you seed new accounts) ─────────────
+# ── Available clients ─────────────────────────────────────────────────────────
+# Add new clients here as you seed them
 AVAILABLE_CLIENTS = [
     "Pachranga",
     "Crespack",
@@ -54,7 +55,7 @@ class AskRequest(BaseModel):
     history: Optional[List[Message]] = []
     conversation_id: Optional[str] = None
     mode: Optional[str] = "auto"
-    client: Optional[str] = None           # None = not yet selected / ambiguous
+    client: Optional[str] = None
 
 
 class PasscodeRequest(BaseModel):
@@ -184,210 +185,43 @@ async def rename_conversation(
     return {"updated": True}
 
 
-# ── Query expansion ───────────────────────────────────────────────────────────
-QUERY_SYNONYMS = {
-    "roi":      "roas return on ad spend marketing performance",
-    "renewal":  "renew reactivate subscription expiry",
-    "blockers": "blocked stuck pending hold stalled cannot proceed",
-    "stuck":    "blocked stalled cannot proceed on hold",
-    "stalled":  "blocked stuck pending hold",
-    "hold":     "blocked stalled waiting cannot proceed",
-    "campaign": "advertising ads performance",
-    "organic":  "organic sales non paid revenue",
-    "paid":     "paid ads advertising spend",
-}
-
-
 # ── Clarification system ──────────────────────────────────────────────────────
-# Keywords that are ambiguous when multiple clients exist
 AMBIGUOUS_KEYWORDS = [
     "roi", "roas", "revenue", "performance", "summary", "overview",
     "status", "what's going on", "campaigns", "blockers", "pending",
     "tasks", "what needs", "improve", "brief", "briefing", "tell me",
     "what have", "what was done", "what all", "what should",
-    "deadline", "what's due", "remaining",
+    "deadline", "what's due", "remaining", "current", "budget",
+    "what are", "how is", "how are", "give me",
 ]
 
-def needs_clarification(question: str, client: Optional[str]) -> Optional[str]:
-    """
-    Returns a clarification question if the query is ambiguous
-    and no client has been specified. Only fires when >1 client exists.
-    """
-    if len(AVAILABLE_CLIENTS) <= 1:
-        return None
-    if client and client in AVAILABLE_CLIENTS:
-        return None  # client already specified, no need to ask
-
-    q = question.lower()
-
-    # Check if any client name is mentioned in the question
-    for c in AVAILABLE_CLIENTS:
-        if c.lower() in q:
-            return None  # client mentioned in question, no need to ask
-
-    # Check if question is ambiguous
-    if any(kw in q for kw in AMBIGUOUS_KEYWORDS):
-        client_options = ", ".join(AVAILABLE_CLIENTS[:-1]) + f", or {AVAILABLE_CLIENTS[-1]}"
-        return (
-            f"Which account are you asking about — {client_options}? "
-            f"Or would you like a combined overview of all accounts?"
-        )
-
-    return None
-
-
-def detect_client_from_question(question: str) -> Optional[str]:
-    """Check if a client name is mentioned in the question itself."""
+def detect_client_from_question(question: str):
     q = question.lower()
     for c in AVAILABLE_CLIENTS:
         if c.lower() in q:
             return c
     return None
 
-
-# ── Auto intent router ────────────────────────────────────────────────────────
-INTENT_RULES = {
-    "analyst": [
-        "brief", "briefing", "overview", "summary", "full picture",
-        "everything", "all of it", "what's going on", "overall",
-        "account status", "give me a rundown", "full report",
-        "what do you know", "tell me about", "analyse", "analyze",
-        "improve", "what needs to be done", "what should we do",
-        "what can we do", "how do we", "next steps", "recommendations",
-        "what to do", "action", "suggest", "fix", "better",
-        "any blockers", "what's blocked", "what is blocked", "blockers",
-        "what's pending", "what is pending", "pending items",
-        "plan", "roadmap", "strategy", "strategic", "devise", "implement",
-        "steps", "how do we execute", "2 day", "week plan", "phase",
-        "prioritize", "prioritise", "focus on", "what should i",
-        "timeline", "history", "what was done", "what have we done",
-        "executed", "completed", "what happened", "when did",
-        "chronological", "sequence", "log",
-        "tasks pending", "pending tasks", "to do", "todo",
-        "outstanding", "remaining", "what's remaining",
-        "what all", "what have i done", "what did i do",
-        "work done", "done so far",
-        "calculate", "compute", "what is the formula",
-        "how much is", "work out", "figure out",
-        "what would", "if spend is", "if revenue is",
-        "what is the roi", "what is the roas", "what is our roi",
-        "what is our roas", "show me the roi", "show me the roas",
-        "give me the roi", "give me the roas",
-        "deadline", "due date", "when is", "when do i need",
-        "latest deadline", "upcoming deadline", "what's due",
-        "what should be done", "how to improve", "how can we improve",
-        "what should i do to improve",
-    ],
-    "operations": [
-        "stuck", "renewal", "renew", "follow up", "followup",
-        "no response", "waiting", "escalate", "urgent", "overdue",
-        "approval", "onboarding", "shipment", "out of stock", "inventory",
-    ],
-    "performance": [
-        "roas", "roi", "spend", "budget", "optimise", "optimize",
-        "efficiency", "cost", "burn rate", "conversion", "acos",
-        "ad spend", "realloc", "underperform",
-    ],
-    "marketing": [
-        "keyword", "campaign", "search term", "targeting", "asin",
-        "bid", "creative", "content", "listing", "brand",
-        "display", "remarketing",
-    ],
-    "memory": [],
-}
-
-
-def detect_intent(question: str) -> str:
+def needs_clarification(question: str, client):
+    if len(AVAILABLE_CLIENTS) <= 1:
+        return None
+    if client and client in AVAILABLE_CLIENTS:
+        return None
+    if detect_client_from_question(question):
+        return None
     q = question.lower()
-    for mode in ["analyst", "operations", "performance", "marketing"]:
-        for keyword in INTENT_RULES[mode]:
-            if keyword in q:
-                return mode
-    return "memory"
+    if any(kw in q for kw in AMBIGUOUS_KEYWORDS):
+        client_options = ", ".join(AVAILABLE_CLIENTS[:-1]) + f", or {AVAILABLE_CLIENTS[-1]}"
+        return (
+            f"Which account are you asking about — {client_options}? "
+            f"Or would you like a combined overview of all accounts?"
+        )
+    return None
 
 
-# ── Mode-based system prompts ─────────────────────────────────────────────────
-MODE_PROMPTS = {
-    "memory": (
-        "You are an internal operations memory assistant for Crescent Group.\n"
-        "Focus on factual retrieval and operational summaries only.\n"
-        "Answer ONLY using retrieved context. Do not invent facts or metrics.\n"
-    ),
-    "marketing": (
-        "You are a marketing analyst for Crescent Group.\n"
-        "Analyze campaign performance, ROAS, keywords, and spend.\n"
-        "Be comprehensive — include campaign names, budgets, spend, "
-        "targeting types, and optimization cadence when available.\n"
-        "Provide grounded recommendations based ONLY on retrieved context.\n"
-        "Clearly distinguish observations from recommendations.\n"
-        "Explain WHY a recommendation could help based on the data.\n"
-    ),
-    "operations": (
-        "You are an operations assistant for Crescent Group.\n"
-        "Focus on blockers, renewals, pending approvals, and escalations.\n"
-        "Surface what needs immediate attention. Be concise and action-oriented.\n"
-        "Prioritise urgency — flag anything overdue or at risk.\n"
-    ),
-    "performance": (
-        "You are a performance optimization assistant for Crescent Group.\n"
-        "Focus on budget efficiency, ROAS improvement, and spend optimization.\n"
-        "Identify underperforming campaigns and suggest reallocation based ONLY on retrieved context.\n"
-        "Always ground recommendations in the data — never invent metrics.\n"
-    ),
-    "analyst": (
-        "You are a senior account analyst for Crescent Group.\n"
-        "You have been given the COMPLETE JSR data for this client — every row, every platform, every status.\n"
-        "Your job is to reason across ALL of it, not just answer the question literally.\n\n"
-        "Response structure — adapt based on what was asked:\n\n"
-        "For FACTUAL questions (what is the roi, what are the tasks, give me an overview, any blockers):\n"
-        "1. Direct Answer — answer precisely and concisely.\n"
-        "2. 📊 Performance Summary — key metrics if relevant.\n"
-        "3. ✅ What's Working\n"
-        "4. 🚨 Blockers & At-Risk Items\n"
-        "5. ⚡ Immediate Actions Needed — no placeholder owners.\n\n"
-        "For STRATEGIC questions (how to improve, what strategy, implementation plan, roadmap, next steps):\n"
-        "1. Direct Answer — summarise the strategic approach in 2-3 sentences.\n"
-        "2. Detailed strategic plan with numbered sections, specific actions, and data references.\n"
-        "DO NOT repeat the Performance Summary, What's Working, or Blockers sections — "
-        "the user already has that context. Jump straight to the strategy.\n\n"
-        "For CALCULATION questions (calculate roi, what is the formula):\n"
-        "1. Direct Answer — show the formula, numbers, and result clearly.\n"
-        "2. Brief context if relevant. Skip the full 5-section structure.\n\n"
-        "For FOLLOW-UP questions in an ongoing conversation:\n"
-        "Skip sections already covered in previous answers. Don't repeat blockers or performance data "
-        "unless specifically asked again.\n\n"
-        "Only mention an owner if explicitly stated in the JSR data. Never write placeholder text like [OWNER NEEDED].\n\n"
-        "Mathematical calculations:\n"
-        "- If the user asks for any calculation, perform it directly using numbers from the JSR data.\n"
-        "- Always show the formula, the numbers used, and the result clearly.\n"
-        "- Example format: ROAS = Revenue ÷ Ad Spend = ₹5,98,496 ÷ ₹2,13,305 = 2.80\n"
-        "- If a standard metric cannot be calculated (e.g. organic ROAS where spend = 0), explain why "
-        "and offer an alternative calculation instead (e.g. organic revenue as % of total revenue).\n"
-        "- Never skip a calculation if the numbers are available in the data.\n\n"
-        "Rules:\n"
-        "- Always surface blockers even if the user didn't ask about them.\n"
-        "- Be specific — name the platform, the job, the issue.\n"
-        "- Never invent data. Only use what's in the JSR.\n"
-        "- Think like a smart analyst who has read the full file, not a search engine.\n"
-    ),
-}
-
-# Shared rules appended to non-analyst mode prompts
-SHARED_RULES = (
-    "\nRules:\n"
-    "- Answer ONLY using the retrieved context.\n"
-    "- Give complete and professional sentences.\n"
-    "- Never return incomplete sentences.\n"
-    "- Mention platform names, campaign details, statuses, and blockers when relevant.\n"
-    "- Treat short follow-up questions as continuation of the previous discussion.\n"
-    "- If information is incomplete, clearly explain what is known.\n"
-    "- If information is unavailable, say so clearly.\n"
-    "- Do not invent facts, metrics, or campaign performance.\n"
-)
-
-
-# ── Analyst mode: fetch ALL documents for a client ────────────────────────────
+# ── Full context fetch ────────────────────────────────────────────────────────
 def fetch_all_client_docs(client: str) -> str:
+    """Fetch every document for a client and build a full context string."""
     rows = (
         supabase.table("documents")
         .select("content, platform, job, status")
@@ -408,6 +242,85 @@ def fetch_all_client_docs(client: str) -> str:
     return "\n\n".join(parts)
 
 
+# ── System prompt ─────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = (
+    "You are a senior account analyst and operations assistant for Crescent Group, "
+    "a media and marketing agency.\n"
+    "You have been given the COMPLETE JSR (Job Sheet Report) data for the client — "
+    "every row, every platform, every task, every status.\n\n"
+
+    "Your job is to reason across ALL of it like a smart analyst who has read the "
+    "full file — not a search engine retrieving chunks.\n\n"
+
+    "Adapt your response structure to what was actually asked:\n\n"
+
+    "For FACTUAL questions (what is the roi, what are the tasks, give me an overview, "
+    "any blockers, what's pending, current tasks):\n"
+    "1. Direct Answer — precise and complete.\n"
+    "2. 📊 Performance Summary — key metrics if available.\n"
+    "3. ✅ What's Working\n"
+    "4. 🚨 Blockers & At-Risk Items\n"
+    "5. ⚡ Immediate Actions Needed — no placeholder owners.\n\n"
+
+    "For STRATEGIC questions (how to improve, implementation plan, strategy, "
+    "roadmap, next steps, what should we do):\n"
+    "1. Direct Answer — 2-3 sentence strategic summary.\n"
+    "2. Detailed plan with numbered sections and specific actions.\n"
+    "Skip Performance Summary and Blockers — user already has that context.\n\n"
+
+    "For CALCULATION questions (calculate roi, what is the formula, compute):\n"
+    "1. Show formula + numbers + result clearly.\n"
+    "   Example: ROAS = Revenue ÷ Ad Spend = ₹54,757 ÷ ₹96,812 = 0.57\n"
+    "2. If a metric can't be calculated (e.g. organic ROAS, spend = 0), explain why "
+    "and offer an alternative (e.g. organic % of total revenue).\n"
+    "Skip the full 5-section structure for pure calculation questions.\n\n"
+
+    "For SHORT FOLLOW-UP questions in an ongoing conversation:\n"
+    "Answer directly without repeating context already given.\n\n"
+
+    "Mathematical rules:\n"
+    "- Always perform calculations when numbers are available.\n"
+    "- Never skip a calculation if the data supports it.\n\n"
+
+    "General rules:\n"
+    "- Answer ONLY using the provided JSR data. Never invent facts or metrics.\n"
+    "- Be specific — name the platform, job, status, issue.\n"
+    "- Surface blockers proactively even when not asked.\n"
+    "- Only mention task owners if explicitly stated in the data.\n"
+    "- Never write placeholder text like [OWNER NEEDED].\n"
+)
+
+# ── Query expansion (kept for vector search fallback) ─────────────────────────
+QUERY_SYNONYMS = {
+    "roi":      "roas return on ad spend marketing performance",
+    "renewal":  "renew reactivate subscription expiry",
+    "blockers": "blocked stuck pending hold stalled cannot proceed",
+    "stuck":    "blocked stalled cannot proceed on hold",
+    "campaign": "advertising ads performance",
+    "organic":  "organic sales non paid revenue",
+    "paid":     "paid ads advertising spend",
+}
+
+
+# ── Persist & update conversation ─────────────────────────────────────────────
+def persist(conversation_id: str, question: str, answer: str, sources: list):
+    supabase.table("messages").insert([
+        {"conversation_id": conversation_id, "role": "user", "content": question},
+        {"conversation_id": conversation_id, "role": "assistant", "content": answer, "sources": sources},
+    ]).execute()
+
+    conv_update: dict = {"updated_at": "now()"}
+    existing = (
+        supabase.table("conversations")
+        .select("title")
+        .eq("id", conversation_id)
+        .execute()
+    )
+    if existing.data and existing.data[0].get("title") is None:
+        conv_update["title"] = question[:80]
+    supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
+
+
 # ── /ask endpoint ─────────────────────────────────────────────────────────────
 @app.post("/ask")
 async def ask(
@@ -424,7 +337,7 @@ async def ask(
             .select("role,content")
             .eq("conversation_id", conversation_id)
             .order("created_at", desc=True)
-            .limit(4)
+            .limit(6)
             .execute()
         )
         recent_history = [
@@ -434,28 +347,16 @@ async def ask(
     else:
         conv_row = supabase.table("conversations").insert({}).execute()
         conversation_id = conv_row.data[0]["id"]
-        recent_history = req.history[-4:] if req.history else []
+        recent_history = req.history[-6:] if req.history else []
 
     # ── 2. Resolve client ─────────────────────────────────────────────────────
-    # Check if client name is mentioned in the question itself
     client_from_question = detect_client_from_question(req.question)
     resolved_client = client_from_question or req.client or None
 
     # ── 3. Clarification check ────────────────────────────────────────────────
     clarification = needs_clarification(req.question, resolved_client)
     if clarification:
-        # Save the clarification exchange to conversation
-        supabase.table("messages").insert([
-            {"conversation_id": conversation_id, "role": "user", "content": req.question},
-            {"conversation_id": conversation_id, "role": "assistant", "content": clarification, "sources": []},
-        ]).execute()
-
-        conv_update: dict = {"updated_at": "now()"}
-        existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
-        if existing.data and existing.data[0].get("title") is None:
-            conv_update["title"] = req.question[:80]
-        supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
-
+        persist(conversation_id, req.question, clarification, [])
         return {
             "answer": clarification,
             "sources": [],
@@ -465,109 +366,86 @@ async def ask(
             "available_clients": AVAILABLE_CLIENTS,
         }
 
-    # ── 4. Resolve mode ───────────────────────────────────────────────────────
-    if req.mode == "auto" or req.mode not in MODE_PROMPTS:
-        resolved_mode = detect_intent(req.question)
-    else:
-        resolved_mode = req.mode
-
-    # Default client if still None after all checks
+    # Default client if still unresolved
     if not resolved_client:
         resolved_client = AVAILABLE_CLIENTS[0]
 
-    # ── 5. ANALYST MODE — full context path ───────────────────────────────────
-    if resolved_mode == "analyst":
-        full_context = fetch_all_client_docs(resolved_client)
+    # ── 4. PRIMARY PATH — full context (default for all queries) ──────────────
+    full_context = fetch_all_client_docs(resolved_client)
 
-        if not full_context:
-            return {
-                "answer": f"No data found for {resolved_client} in the database.",
-                "sources": [],
-                "conversation_id": conversation_id,
-                "mode_used": resolved_mode,
-            }
+    if full_context:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        messages = [{"role": "system", "content": MODE_PROMPTS["analyst"]}]
+        # Add conversation history
         for msg in recent_history:
             messages.append({"role": msg.role, "content": msg.content})
+
+        # Full data + question
         messages.append({
             "role": "user",
             "content": (
-                f"Complete JSR Data for {resolved_client}:\n\n"
+                f"Complete JSR data for {resolved_client}:\n\n"
                 f"{full_context}\n\n"
                 f"Question: {req.question}"
             )
         })
 
         synthesis = openai_client.chat.completions.create(
-            model="google/gemini-2.0-flash-001",
+            model="anthropic/claude-haiku-4-5",
             messages=messages
         )
         answer = synthesis.choices[0].message.content
 
-        supabase.table("messages").insert([
-            {"conversation_id": conversation_id, "role": "user", "content": req.question},
-            {"conversation_id": conversation_id, "role": "assistant", "content": answer, "sources": []},
-        ]).execute()
-
-        conv_update: dict = {"updated_at": "now()"}
-        existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
-        if existing.data and existing.data[0].get("title") is None:
-            conv_update["title"] = req.question[:80]
-        supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
+        persist(conversation_id, req.question, answer, [])
 
         return {
             "answer": answer,
             "sources": [],
             "conversation_id": conversation_id,
-            "mode_used": resolved_mode,
+            "mode_used": "full_context",
             "client_used": resolved_client,
         }
 
-    # ── 6. STANDARD MODES — vector search path ────────────────────────────────
+    # ── 5. FALLBACK — vector search (when no client docs found) ───────────────
+    # This only triggers if the client has no data in Supabase
 
-    # Build conversational retrieval context
     conversation_context = ""
     for msg in recent_history:
         conversation_context += f"{msg.role}: {msg.content}\n"
     conversation_context += f"user: {req.question}"
 
-    # Semantic expansion
-    question = conversation_context.lower()
+    question_expanded = conversation_context.lower()
     for k, v in QUERY_SYNONYMS.items():
-        if k in question:
-            question += " " + v
+        if k in question_expanded:
+            question_expanded += " " + v
 
-    # Generate embedding
     embed_response = openai_client.embeddings.create(
         model="openai/text-embedding-3-small",
-        input=question
+        input=question_expanded
     )
     query_embedding = embed_response.data[0].embedding
 
-    # Vector search — filter by client if specified
-    rpc_params = {
-        "query_embedding": query_embedding,
-        "match_threshold": 0.28,
-        "match_count": 8,
-    }
-    result = supabase.rpc("match_documents", rpc_params).execute()
+    result = supabase.rpc(
+        "match_documents",
+        {
+            "query_embedding": query_embedding,
+            "match_threshold": 0.28,
+            "match_count": 8
+        }
+    ).execute()
+
     chunks = result.data or []
 
-    # Filter by client if one is resolved
-    if resolved_client:
-        chunks = [c for c in chunks if c.get("client") == resolved_client]
-
-    # No-results guard
     if not chunks:
+        answer = "I don't have enough information in the current data to answer that question."
+        persist(conversation_id, req.question, answer, [])
         return {
-            "answer": "I don't have enough information in the current data to answer that question.",
+            "answer": answer,
             "sources": [],
             "conversation_id": conversation_id,
-            "mode_used": resolved_mode,
+            "mode_used": "fallback",
         }
 
-    # Build structured retrieval context
     context = "\n\n".join([
         (
             f"[Document {i+1}]\n"
@@ -579,26 +457,20 @@ async def ask(
         for i, c in enumerate(chunks)
     ])
 
-    # Build mode-based system prompt
-    system_prompt = MODE_PROMPTS[resolved_mode] + SHARED_RULES
-
-    # Build messages array
-    messages = [{"role": "system", "content": system_prompt}]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for msg in recent_history:
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({
         "role": "user",
-        "content": f"Retrieved Context:\n{context}\n\nCurrent Question:\n{req.question}"
+        "content": f"Retrieved Context:\n{context}\n\nQuestion:\n{req.question}"
     })
 
-    # Generate response
     synthesis = openai_client.chat.completions.create(
-        model="google/gemini-2.0-flash-001",
+        model="anthropic/claude-haiku-4-5",
         messages=messages
     )
     answer = synthesis.choices[0].message.content
 
-    # Build sources
     sources = [
         {
             "platform": c.get("platform", ""),
@@ -609,23 +481,13 @@ async def ask(
         for c in chunks
     ]
 
-    # Persist messages & update conversation
-    supabase.table("messages").insert([
-        {"conversation_id": conversation_id, "role": "user", "content": req.question},
-        {"conversation_id": conversation_id, "role": "assistant", "content": answer, "sources": sources},
-    ]).execute()
-
-    conv_update: dict = {"updated_at": "now()"}
-    existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
-    if existing.data and existing.data[0].get("title") is None:
-        conv_update["title"] = req.question[:80]
-    supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
+    persist(conversation_id, req.question, answer, sources)
 
     return {
         "answer": answer,
         "sources": sources,
         "conversation_id": conversation_id,
-        "mode_used": resolved_mode,
+        "mode_used": "vector_search_fallback",
         "client_used": resolved_client,
     }
 
@@ -636,7 +498,7 @@ async def health():
     return {"status": "ok"}
 
 
-# ── /clients endpoint — list available clients ────────────────────────────────
+# ── /clients endpoint ─────────────────────────────────────────────────────────
 @app.get("/clients")
 async def list_clients(
     x_demo_passcode: Optional[str] = Header(default=None)
