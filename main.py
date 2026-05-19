@@ -45,8 +45,8 @@ class AskRequest(BaseModel):
     passcode: Optional[str] = None
     history: Optional[List[Message]] = []
     conversation_id: Optional[str] = None
-    mode: Optional[str] = "auto"            # auto | memory | marketing | operations | performance | analyst
-    client: Optional[str] = "Pachranga"     # client name for analyst mode full-context fetch
+    mode: Optional[str] = "auto"
+    client: Optional[str] = "Pachranga"
 
 
 class PasscodeRequest(BaseModel):
@@ -193,7 +193,7 @@ QUERY_SYNONYMS = {
 # ── Auto intent router ────────────────────────────────────────────────────────
 INTENT_RULES = {
     "analyst": [
-       "brief", "briefing", "overview", "summary", "full picture",
+        "brief", "briefing", "overview", "summary", "full picture",
         "everything", "all of it", "what's going on", "overall",
         "account status", "give me a rundown", "full report",
         "what do you know", "tell me about", "analyse", "analyze",
@@ -210,6 +210,11 @@ INTENT_RULES = {
         "chronological", "sequence", "log",
         "tasks pending", "pending tasks", "to do", "todo",
         "outstanding", "remaining", "what's remaining",
+        "what all", "what have i done", "what did i do",
+        "work done", "done so far",
+        "calculate", "compute", "what is the formula",
+        "how much is", "work out", "figure out",
+        "what would", "if spend is", "if revenue is",
     ],
     "operations": [
         "stuck", "renewal", "renew", "follow up", "followup",
@@ -226,8 +231,9 @@ INTENT_RULES = {
         "bid", "creative", "content", "listing", "brand",
         "display", "remarketing",
     ],
-    "memory": [],   # fallback — always matches last
+    "memory": [],
 }
+
 
 def detect_intent(question: str) -> str:
     """
@@ -236,13 +242,10 @@ def detect_intent(question: str) -> str:
     Falls back to 'memory' if nothing matches.
     """
     q = question.lower()
-
-    # Check in priority order: analyst → operations → performance → marketing → memory
     for mode in ["analyst", "operations", "performance", "marketing"]:
         for keyword in INTENT_RULES[mode]:
             if keyword in q:
                 return mode
-
     return "memory"
 
 
@@ -256,6 +259,8 @@ MODE_PROMPTS = {
     "marketing": (
         "You are a marketing analyst for Crescent Group.\n"
         "Analyze campaign performance, ROAS, keywords, and spend.\n"
+        "Be comprehensive — include campaign names, budgets, spend, "
+        "targeting types, and optimization cadence when available.\n"
         "Provide grounded recommendations based ONLY on retrieved context.\n"
         "Clearly distinguish observations from recommendations.\n"
         "Explain WHY a recommendation could help based on the data.\n"
@@ -282,6 +287,13 @@ MODE_PROMPTS = {
         "3. ✅ What's Working — active campaigns, live platforms, ongoing tasks running well.\n"
         "4. 🚨 Blockers & At-Risk Items — stalled work, no-response follow-ups, pending confirmations, out-of-stock issues.\n"
         "5. ⚡ Immediate Actions Needed — specific things that need to happen now, with owners if known.\n\n"
+        "Mathematical calculations:\n"
+        "- If the user asks for any calculation, perform it directly using numbers from the JSR data.\n"
+        "- Always show the formula, the numbers used, and the result clearly.\n"
+        "- Example format: ROAS = Revenue ÷ Ad Spend = ₹5,98,496 ÷ ₹2,13,305 = 2.80\n"
+        "- If a standard metric cannot be calculated (e.g. organic ROAS where spend = 0), explain why "
+        "and offer an alternative calculation instead (e.g. organic revenue as % of total revenue).\n"
+        "- Never skip a calculation if the numbers are available in the data.\n\n"
         "Rules:\n"
         "- Always surface blockers even if the user didn't ask about them.\n"
         "- Be specific — name the platform, the job, the issue.\n"
@@ -355,13 +367,13 @@ async def ask(
         conversation_id = conv_row.data[0]["id"]
         recent_history = req.history[-4:] if req.history else []
 
-    # ── 2. Resolve mode (auto-route or use manual selection) ──────────────────
+    # ── 2. Resolve mode ───────────────────────────────────────────────────────
     if req.mode == "auto" or req.mode not in MODE_PROMPTS:
         resolved_mode = detect_intent(req.question)
     else:
         resolved_mode = req.mode
 
-    # ── 3. ANALYST MODE — full context path (skips vector search) ────────────
+    # ── 3. ANALYST MODE — full context path ───────────────────────────────────
     if resolved_mode == "analyst":
         full_context = fetch_all_client_docs(req.client or "Pachranga")
 
@@ -391,14 +403,18 @@ async def ask(
         )
         answer = synthesis.choices[0].message.content
 
-        # Persist
         supabase.table("messages").insert([
             {"conversation_id": conversation_id, "role": "user", "content": req.question},
             {"conversation_id": conversation_id, "role": "assistant", "content": answer, "sources": []},
         ]).execute()
 
         conv_update: dict = {"updated_at": "now()"}
-        existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
+        existing = (
+            supabase.table("conversations")
+            .select("title")
+            .eq("id", conversation_id)
+            .execute()
+        )
         if existing.data and existing.data[0].get("title") is None:
             conv_update["title"] = req.question[:80]
         supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
@@ -407,7 +423,7 @@ async def ask(
             "answer": answer,
             "sources": [],
             "conversation_id": conversation_id,
-            "mode_used": resolved_mode,      # tells frontend which mode was auto-selected
+            "mode_used": resolved_mode,
         }
 
     # ── 4. STANDARD MODES — vector search path ────────────────────────────────
@@ -501,7 +517,12 @@ async def ask(
     ]).execute()
 
     conv_update: dict = {"updated_at": "now()"}
-    existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
+    existing = (
+        supabase.table("conversations")
+        .select("title")
+        .eq("id", conversation_id)
+        .execute()
+    )
     if existing.data and existing.data[0].get("title") is None:
         conv_update["title"] = req.question[:80]
     supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
@@ -510,7 +531,7 @@ async def ask(
         "answer": answer,
         "sources": sources,
         "conversation_id": conversation_id,
-        "mode_used": resolved_mode,          # tells frontend which mode was auto-selected
+        "mode_used": resolved_mode,
     }
 
 
