@@ -218,6 +218,11 @@ INTENT_RULES = {
         "what is the roi", "what is the roas", "what is our roi",
         "what is our roas", "show me the roi", "show me the roas",
         "give me the roi", "give me the roas",
+        "roi?", "roas?",
+        "deadline", "due date", "when is", "when do i need",
+        "latest deadline", "upcoming deadline", "what's due",
+        "what should be done", "how to improve", "how can we improve",
+        "what should i do to improve",
     ],
     "operations": [
         "stuck", "renewal", "renew", "follow up", "followup",
@@ -285,7 +290,12 @@ MODE_PROMPTS = {
         "You have been given the COMPLETE JSR data for this client — every row, every platform, every status.\n"
         "Your job is to reason across ALL of it, not just answer the question literally.\n\n"
         "Response structure (always follow this):\n"
-        "1. Direct Answer — answer the user's specific question first, clearly and precisely.\n"
+        "1. Direct Answer — answer the user's specific question first, clearly and precisely. "
+        "IMPORTANT: match this section exactly to what was asked. "
+        "If the question is about improving ROI/ROAS, give specific data-backed improvements — not a list of blockers. "
+        "If the question is about a deadline, state the deadline. "
+        "If the question is about what was done, summarise the work. "
+        "Never copy-paste the blockers list into the Direct Answer section.\n"
         "2. 📊 Performance Summary — key metrics (ROAS, revenue, orders, spend) if available.\n"
         "3. ✅ What's Working — active campaigns, live platforms, ongoing tasks running well.\n"
         "4. 🚨 Blockers & At-Risk Items — stalled work, no-response follow-ups, pending confirmations, out-of-stock issues.\n"
