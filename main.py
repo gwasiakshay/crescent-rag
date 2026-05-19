@@ -193,7 +193,7 @@ QUERY_SYNONYMS = {
 # ── Auto intent router ────────────────────────────────────────────────────────
 INTENT_RULES = {
     "analyst": [
-        "brief", "briefing", "overview", "summary", "full picture",
+       "brief", "briefing", "overview", "summary", "full picture",
         "everything", "all of it", "what's going on", "overall",
         "account status", "give me a rundown", "full report",
         "what do you know", "tell me about", "analyse", "analyze",
@@ -205,6 +205,11 @@ INTENT_RULES = {
         "plan", "roadmap", "strategy", "strategic", "devise", "implement",
         "steps", "how do we execute", "2 day", "week plan", "phase",
         "prioritize", "prioritise", "focus on", "what should i",
+        "timeline", "history", "what was done", "what have we done",
+        "executed", "completed", "what happened", "when did",
+        "chronological", "sequence", "log",
+        "tasks pending", "pending tasks", "to do", "todo",
+        "outstanding", "remaining", "what's remaining",
     ],
     "operations": [
         "stuck", "renewal", "renew", "follow up", "followup",
