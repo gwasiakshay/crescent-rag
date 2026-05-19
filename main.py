@@ -24,6 +24,14 @@ openai_client = OpenAI(
     base_url="https://openrouter.ai/api/v1"
 )
 
+# ── Available clients (update this list as you seed new accounts) ─────────────
+AVAILABLE_CLIENTS = [
+    "Pachranga",
+    "Crespack",
+    "Jaquar",
+    "Jaquar International",
+]
+
 # ── FastAPI App ───────────────────────────────────────────────────────────────
 app = FastAPI()
 
@@ -46,7 +54,7 @@ class AskRequest(BaseModel):
     history: Optional[List[Message]] = []
     conversation_id: Optional[str] = None
     mode: Optional[str] = "auto"
-    client: Optional[str] = "Pachranga"
+    client: Optional[str] = None           # None = not yet selected / ambiguous
 
 
 class PasscodeRequest(BaseModel):
@@ -190,6 +198,53 @@ QUERY_SYNONYMS = {
 }
 
 
+# ── Clarification system ──────────────────────────────────────────────────────
+# Keywords that are ambiguous when multiple clients exist
+AMBIGUOUS_KEYWORDS = [
+    "roi", "roas", "revenue", "performance", "summary", "overview",
+    "status", "what's going on", "campaigns", "blockers", "pending",
+    "tasks", "what needs", "improve", "brief", "briefing", "tell me",
+    "what have", "what was done", "what all", "what should",
+    "deadline", "what's due", "remaining",
+]
+
+def needs_clarification(question: str, client: Optional[str]) -> Optional[str]:
+    """
+    Returns a clarification question if the query is ambiguous
+    and no client has been specified. Only fires when >1 client exists.
+    """
+    if len(AVAILABLE_CLIENTS) <= 1:
+        return None
+    if client and client in AVAILABLE_CLIENTS:
+        return None  # client already specified, no need to ask
+
+    q = question.lower()
+
+    # Check if any client name is mentioned in the question
+    for c in AVAILABLE_CLIENTS:
+        if c.lower() in q:
+            return None  # client mentioned in question, no need to ask
+
+    # Check if question is ambiguous
+    if any(kw in q for kw in AMBIGUOUS_KEYWORDS):
+        client_options = ", ".join(AVAILABLE_CLIENTS[:-1]) + f", or {AVAILABLE_CLIENTS[-1]}"
+        return (
+            f"Which account are you asking about — {client_options}? "
+            f"Or would you like a combined overview of all accounts?"
+        )
+
+    return None
+
+
+def detect_client_from_question(question: str) -> Optional[str]:
+    """Check if a client name is mentioned in the question itself."""
+    q = question.lower()
+    for c in AVAILABLE_CLIENTS:
+        if c.lower() in q:
+            return c
+    return None
+
+
 # ── Auto intent router ────────────────────────────────────────────────────────
 INTENT_RULES = {
     "analyst": [
@@ -215,6 +270,9 @@ INTENT_RULES = {
         "calculate", "compute", "what is the formula",
         "how much is", "work out", "figure out",
         "what would", "if spend is", "if revenue is",
+        "what is the roi", "what is the roas", "what is our roi",
+        "what is our roas", "show me the roi", "show me the roas",
+        "give me the roi", "give me the roas",
         "deadline", "due date", "when is", "when do i need",
         "latest deadline", "upcoming deadline", "what's due",
         "what should be done", "how to improve", "how can we improve",
@@ -240,11 +298,6 @@ INTENT_RULES = {
 
 
 def detect_intent(question: str) -> str:
-    """
-    Rule-based intent router.
-    Checks question against keyword lists in priority order.
-    Falls back to 'memory' if nothing matches.
-    """
     q = question.lower()
     for mode in ["analyst", "operations", "performance", "marketing"]:
         for keyword in INTENT_RULES[mode]:
@@ -328,7 +381,6 @@ SHARED_RULES = (
 
 # ── Analyst mode: fetch ALL documents for a client ────────────────────────────
 def fetch_all_client_docs(client: str) -> str:
-    """Fetch every document for a client and build a full context string."""
     rows = (
         supabase.table("documents")
         .select("content, platform, job, status")
@@ -377,19 +429,52 @@ async def ask(
         conversation_id = conv_row.data[0]["id"]
         recent_history = req.history[-4:] if req.history else []
 
-    # ── 2. Resolve mode ───────────────────────────────────────────────────────
+    # ── 2. Resolve client ─────────────────────────────────────────────────────
+    # Check if client name is mentioned in the question itself
+    client_from_question = detect_client_from_question(req.question)
+    resolved_client = client_from_question or req.client or None
+
+    # ── 3. Clarification check ────────────────────────────────────────────────
+    clarification = needs_clarification(req.question, resolved_client)
+    if clarification:
+        # Save the clarification exchange to conversation
+        supabase.table("messages").insert([
+            {"conversation_id": conversation_id, "role": "user", "content": req.question},
+            {"conversation_id": conversation_id, "role": "assistant", "content": clarification, "sources": []},
+        ]).execute()
+
+        conv_update: dict = {"updated_at": "now()"}
+        existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
+        if existing.data and existing.data[0].get("title") is None:
+            conv_update["title"] = req.question[:80]
+        supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
+
+        return {
+            "answer": clarification,
+            "sources": [],
+            "conversation_id": conversation_id,
+            "mode_used": "clarification",
+            "needs_clarification": True,
+            "available_clients": AVAILABLE_CLIENTS,
+        }
+
+    # ── 4. Resolve mode ───────────────────────────────────────────────────────
     if req.mode == "auto" or req.mode not in MODE_PROMPTS:
         resolved_mode = detect_intent(req.question)
     else:
         resolved_mode = req.mode
 
-    # ── 3. ANALYST MODE — full context path ───────────────────────────────────
+    # Default client if still None after all checks
+    if not resolved_client:
+        resolved_client = AVAILABLE_CLIENTS[0]
+
+    # ── 5. ANALYST MODE — full context path ───────────────────────────────────
     if resolved_mode == "analyst":
-        full_context = fetch_all_client_docs(req.client or "Pachranga")
+        full_context = fetch_all_client_docs(resolved_client)
 
         if not full_context:
             return {
-                "answer": "No data found for this client in the database.",
+                "answer": f"No data found for {resolved_client} in the database.",
                 "sources": [],
                 "conversation_id": conversation_id,
                 "mode_used": resolved_mode,
@@ -401,7 +486,7 @@ async def ask(
         messages.append({
             "role": "user",
             "content": (
-                f"Complete JSR Data for {req.client or 'Pachranga'}:\n\n"
+                f"Complete JSR Data for {resolved_client}:\n\n"
                 f"{full_context}\n\n"
                 f"Question: {req.question}"
             )
@@ -419,12 +504,7 @@ async def ask(
         ]).execute()
 
         conv_update: dict = {"updated_at": "now()"}
-        existing = (
-            supabase.table("conversations")
-            .select("title")
-            .eq("id", conversation_id)
-            .execute()
-        )
+        existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
         if existing.data and existing.data[0].get("title") is None:
             conv_update["title"] = req.question[:80]
         supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
@@ -434,9 +514,10 @@ async def ask(
             "sources": [],
             "conversation_id": conversation_id,
             "mode_used": resolved_mode,
+            "client_used": resolved_client,
         }
 
-    # ── 4. STANDARD MODES — vector search path ────────────────────────────────
+    # ── 6. STANDARD MODES — vector search path ────────────────────────────────
 
     # Build conversational retrieval context
     conversation_context = ""
@@ -457,17 +538,18 @@ async def ask(
     )
     query_embedding = embed_response.data[0].embedding
 
-    # Vector search
-    result = supabase.rpc(
-        "match_documents",
-        {
-            "query_embedding": query_embedding,
-            "match_threshold": 0.28,
-            "match_count": 8
-        }
-    ).execute()
-
+    # Vector search — filter by client if specified
+    rpc_params = {
+        "query_embedding": query_embedding,
+        "match_threshold": 0.28,
+        "match_count": 8,
+    }
+    result = supabase.rpc("match_documents", rpc_params).execute()
     chunks = result.data or []
+
+    # Filter by client if one is resolved
+    if resolved_client:
+        chunks = [c for c in chunks if c.get("client") == resolved_client]
 
     # No-results guard
     if not chunks:
@@ -527,12 +609,7 @@ async def ask(
     ]).execute()
 
     conv_update: dict = {"updated_at": "now()"}
-    existing = (
-        supabase.table("conversations")
-        .select("title")
-        .eq("id", conversation_id)
-        .execute()
-    )
+    existing = supabase.table("conversations").select("title").eq("id", conversation_id).execute()
     if existing.data and existing.data[0].get("title") is None:
         conv_update["title"] = req.question[:80]
     supabase.table("conversations").update(conv_update).eq("id", conversation_id).execute()
@@ -542,6 +619,7 @@ async def ask(
         "sources": sources,
         "conversation_id": conversation_id,
         "mode_used": resolved_mode,
+        "client_used": resolved_client,
     }
 
 
@@ -549,3 +627,12 @@ async def ask(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── /clients endpoint — list available clients ────────────────────────────────
+@app.get("/clients")
+async def list_clients(
+    x_demo_passcode: Optional[str] = Header(default=None)
+):
+    verify_demo_passcode(None, x_demo_passcode)
+    return {"clients": AVAILABLE_CLIENTS}
