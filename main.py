@@ -391,7 +391,7 @@ async def ask(
         })
 
         synthesis = openai_client.chat.completions.create(
-            model="google/gemini-2.0-flash-001",
+            model="anthropic/claude-haiku-4-5",
             messages=messages
         )
         answer = synthesis.choices[0].message.content
@@ -466,7 +466,7 @@ async def ask(
     })
 
     synthesis = openai_client.chat.completions.create(
-        model="google/gemini-2.0-flash-001",
+        model="anthropic/claude-haiku-4-5",
         messages=messages
     )
     answer = synthesis.choices[0].message.content
