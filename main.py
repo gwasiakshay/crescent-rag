@@ -215,7 +215,10 @@ INTENT_RULES = {
         "calculate", "compute", "what is the formula",
         "how much is", "work out", "figure out",
         "what would", "if spend is", "if revenue is",
-    ],
+        "what is the roi", "what is the roas", "what is our roi",
+        "what is our roas", "show me the roi", "show me the roas",
+        "give me the roi", "give me the roas",
+],
     "operations": [
         "stuck", "renewal", "renew", "follow up", "followup",
         "no response", "waiting", "escalate", "urgent", "overdue",
@@ -286,7 +289,8 @@ MODE_PROMPTS = {
         "2. 📊 Performance Summary — key metrics (ROAS, revenue, orders, spend) if available.\n"
         "3. ✅ What's Working — active campaigns, live platforms, ongoing tasks running well.\n"
         "4. 🚨 Blockers & At-Risk Items — stalled work, no-response follow-ups, pending confirmations, out-of-stock issues.\n"
-        "5. ⚡ Immediate Actions Needed — specific things that need to happen now, with owners if known.\n\n"
+        "5. ⚡ Immediate Actions Needed — specific things that need to happen now, with owners if known.  
+        "Only mention an owner if explicitly stated in the JSR data. Never write placeholder text like [OWNER NEEDED].\n\n"
         "Mathematical calculations:\n"
         "- If the user asks for any calculation, perform it directly using numbers from the JSR data.\n"
         "- Always show the formula, the numbers used, and the result clearly.\n"
