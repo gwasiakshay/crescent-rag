@@ -1,6 +1,7 @@
 import os
 from typing import Optional, List, Any
 
+from datetime import date
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -244,6 +245,8 @@ def fetch_all_client_docs(client: str) -> str:
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = (
+    f"Today's date is {date.today().strftime('%B %d, %Y')}. "
+    "Use this to assess deadlines — flag any that have already passed and state how many days away upcoming ones are.\n\n"
     "You are a senior account analyst and operations assistant for Crescent Group, "
     "a media and marketing agency.\n"
     "You have been given the COMPLETE JSR (Job Sheet Report) data for the client — "
