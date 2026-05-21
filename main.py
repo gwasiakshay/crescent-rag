@@ -26,12 +26,25 @@ openai_client = OpenAI(
 )
 
 # ── Available clients ─────────────────────────────────────────────────────────
-# Add new clients here as you seed them
 AVAILABLE_CLIENTS = [
     "Pachranga",
     "Crespack",
     "Jaquar",
     "Jaquar International",
+    "Jaquar GMB",
+    "Jaquar Lighting",
+    "British Paint",
+    "Essco",
+    "Canon",
+    "TCI Logistics",
+    "Artize",
+    "TRE",
+    "FX10",
+    "WATI",
+    "Maspar",
+    "Crescent Lead Campaign",
+    "Snack Factory",
+    "Saraswati",
 ]
 
 # ── FastAPI App ───────────────────────────────────────────────────────────────
@@ -379,11 +392,9 @@ async def ask(
     if full_context:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        # Add conversation history
         for msg in recent_history:
             messages.append({"role": msg.role, "content": msg.content})
 
-        # Full data + question
         messages.append({
             "role": "user",
             "content": (
@@ -410,8 +421,6 @@ async def ask(
         }
 
     # ── 5. FALLBACK — vector search (when no client docs found) ───────────────
-    # This only triggers if the client has no data in Supabase
-
     conversation_context = ""
     for msg in recent_history:
         conversation_context += f"{msg.role}: {msg.content}\n"
